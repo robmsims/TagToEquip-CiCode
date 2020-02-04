@@ -1,0 +1,471 @@
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//                     File  = Import.ci
+//
+//	Function: Import(FileName)- reads csv file containg tags exported from Citect Studio
+//	Description: Main funtion called that	
+//		- Finds Schema most used (W=words,N=Number,etc)  
+//		- Finds Equipment Word used in schema
+//		- Finds Primary, Secondry etc areas
+//		- Finds Equipment Numbers
+//		- Displays found schema on citect runtime page 
+//  General rules applied when finding schema, area digits, equipmnent type and item number
+// 		- when finding a schema all letters a-z, A-Z together are considerd are grouped togethre and considered a word 
+//		- Area hierachy will be designated by numbers and group in the same block of digits ie a large number.
+//
+//	Helper Funtions
+//		- [ReadCSVFile.ci]GetVariable(csv line) - returns varble tag from csv line 
+//		- [ReadCSVFile.ci]GetScenarioNumberFromScenarioData(variable tag) - returns schema from a varaiable tag
+//					Internal Global Variables set: Array String g_sTag[] - breakdown of tag characters grouped per schema character sequentialy in an array.
+//								:INT m_iTagNumElementStored - store number of array elements (ie length of schema)
+//		- [findEquipAndTree.ci]FindEquipTypePositionAndImportdata(csv file name, most used schema) - loads matrix matching schema with equipment typrd 
+//																				returns equipment word positon in schema
+// 		- [Import.ci]EquipPostionToEquipType(Schema, equipment type Word Postion) - returns position within the schema for Nth Word
+//		- [findEquipAndTree.ci]FindTree(csv file name, most used schema,equipment type Word Postion) - finds area heirachy and returs if its 2digit area numner or 1
+//		
+//		- [findEquipAndTree.ci]FindBoundry(Primary area Position in schema,Schema) - find the last occurance of a number TO the left of the primary area digit
+//		- [findEquipAndTree.ci]FindEndBoundry(Primary area Position in schema,Schema) - find the last occurance of a number to the right of the primary area digit
+//		- [findEquipAndTree.ci]IsInBoundry(start digit, end digit, area digit) - returns if area digit is within the same block of numbers as the primary area
+//
+//		- [FindEquipDigits.ci]FindEquipDigits(csv file name,
+//			most used schema,
+//			Number of Digits per Area number,
+//			equipment position,
+//			Primary Area Number,
+//			Secondary Area number,
+//			Tirtuary Area number,
+//			forthlevel Area) - find equipment item digits 
+//
+//	Presentation Functions
+//		- [Import.ci]DisplaySchema(Number of tags read,
+//			most used schema,
+//			Number of Digits per Area number,
+//			equipment position,
+//			Primary Area Number,
+//			Secondary Area number,
+//			Tirtuary Area number,
+//			forthlevel Area) - push current schema to citect graphics page.
+//
+//			By Robert Sims, December 2016
+//
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+MODULE INT m_iSchemaMax = 30;  // maximum number of different schemas to consider
+MODULE STRING m_sSchema[30];
+GLOBAL INT g_iMaxReadIn = 221000;  // set maximim size of csv file to read in
+GLOBAL INT g_iFirstLevelTree = -1;
+GLOBAL INT g_iSecondLevelTree=-1;
+GLOBAL INT g_iThirdLevelTree=-1;
+GLOBAL INT g_iFourthLevelTree=-1;
+GLOBAL INT g_iDisplayCountMax=14;
+
+
+// Main application function
+FUNCTION Import(STRING sFileName = "c:\temp\variable.csv");
+	INT iMaxArray,iMaxIndex;
+	INT iIndex = 0,iFound = 0;
+	INT iTagPart;
+	INT iSuffix,iError;
+	STRING sCurrentScenarioDataLine;
+	STRING sCurrentScenarioDataLineSufix;
+	STRING sCurrentScenarioDataRecord;
+	STRING sFirstField;	
+	INT hFile;
+	INT iReadinRecordCount =0;
+	INT iMode=-1;
+	INT iEquipPostion=-1,iEquipType;
+	INT iDisplayCount, 
+	INT iTemp;
+	INT iStartBoundry;
+	INT iEndBoundry;
+	
+//////scan project for different schemas////////////////////////////////////////////////////////////////////////////////
+
+	ErrSet(1);
+
+	// initalis variables 
+	g_iFirstLevelTree = -1;
+	g_iSecondLevelTree=-1;
+	g_iThirdLevelTree=-1;
+	g_iFourthLevelTree=-1;
+		
+	FOR iDisplayCount = 1 TO 6 DO
+		TagWrite("ProgressString"+IntToStr(iDisplayCount),"");	
+	END
+
+	FOR iDisplayCount = 1 TO g_iDisplayCountMax DO
+		TagWrite("ScemaString"+IntToStr(iDisplayCount),"");	
+	END
+	
+	TagWrite("ExampleTag","");
+
+	ErrLog("Import start. Looking for Schema.");
+	ProgressString1 = "Reading in file to get schema"
+	
+	hFile = FileOpen(sFileName,"r");
+	
+	IF m_sSchema[0] <> "" THEN
+		WHILE iIndex < 20 DO
+			m_sSchema[iIndex] = "";
+			iIndex = iIndex + 1;
+		END
+		iReadinRecordCount = 0;
+	END
+	
+	iReadinRecordCount = 0;
+	WHILE NOT(FileEOF(hFile)) AND iReadinRecordCount < g_iMaxReadIn DO	
+		sCurrentScenarioDataLine = FileReadLn(hFile);
+		iError = IsError();
+		sCurrentScenarioDataRecord = GetVariable(sCurrentScenarioDataLine);
+		
+		//ErrLog("raw text read from file :" + sCurrentScenarioDataRecord);
+		
+		//Read in first Field																
+		sFirstField = GetScenarioNumberFromScenarioData(sCurrentScenarioDataRecord);
+		
+		//ErrLog("text being sorted and counted :"+IntToStr(iReadinRecordCount)+ " = " + sCurrentScenarioDataRecord);
+		
+		// record all schemas found and count how many timess its used
+		iIndex = 0;
+		iFound = 0;
+		WHILE sFirstField <> "" AND iIndex < m_iSchemaMax AND iFound = 0 DO
+			IF m_sSchema[iIndex] = "" THEN 
+		   		m_sSchema[iIndex] = sFirstField;
+		   	END
+		   	
+			IF sFirstField = m_sSchema[iIndex] THEN
+				m_sSchema[iIndex + 1] = IntToStr(StrToInt(m_sSchema[iIndex + 1])+1);
+				iFound = 1;
+		   	END
+
+			iIndex = iIndex + 2;
+		END		
+		// read in rest of line and throw away
+		iSuffix = 2
+		WHILE iSuffix < 6 AND iError = 275 DO
+			sCurrentScenarioDataLineSufix = FileReadLn(hFile);
+			iError = IsError();
+			iSuffix = iSuffix + 1;
+		END
+		iReadinRecordCount = iReadinRecordCount + 1;
+	END
+	
+	FileClose(hFile);
+	
+	ProgressString1 ="File read in. Looking for Schema";
+	
+	// get most used schema
+	iIndex = 0;
+	iFound = 0;
+	WHILE sFirstField <> "" AND iIndex < m_iSchemaMax AND iFound = 0 DO
+		IF m_sSchema[iIndex] = "" THEN 
+	   		iFound = 1;
+	   	END
+	   	
+		IF StrToInt(m_sSchema[iIndex + 1]) > iMaxArray THEN
+			iMaxArray = StrToInt(m_sSchema[iIndex + 1]);
+			iMaxIndex = iIndex;
+	   	END
+
+		iIndex = iIndex + 2;
+	END	
+	ErrLog("Schema Found :"+m_sSchema[iMaxIndex]+" Number of records read in = "+IntToStr(iReadinRecordCount) );
+	ProgressString1 = "Schema Found :"+m_sSchema[iMaxIndex]+" Number of records read in = "+IntToStr(iReadinRecordCount);
+	
+	// push shema decodeing progress to display
+	DisplaySchema(g_iDisplayCountMax,m_sSchema[iMaxIndex],iMode,iEquipPostion, g_iFirstLevelTree, g_iSecondLevelTree, g_iThirdLevelTree, g_iFourthLevelTree)
+	
+//////////// get the position of the equipment type///////////////////////////////////////////////////////////////////////////////////////////////////////////
+	ProgressString2 = "Getting Equipment location in schema";
+	iEquipPostion = FindEquipTypePositionAndImportdata(sFileName,m_sSchema[iMaxIndex]);
+	ProgressString2 = "Equipment position is at schema element "+IntToStr(1+EquipPostionToEquipType(m_sSchema[iMaxIndex],iEquipPostion));
+	DisplaySchema(g_iDisplayCountMax,m_sSchema[iMaxIndex],iMode,iEquipPostion, g_iFirstLevelTree, g_iSecondLevelTree, g_iThirdLevelTree, g_iFourthLevelTree);
+
+/////////// get the tree , return mode is how many digits used pare area ie 1 or 2 digit number for area//////////////////////////////////////////////////////
+	ProgressString3 = "Read in file and create equipment area hierachy";
+	iMode = FindTree(sFileName,m_sSchema[iMaxIndex],iEquipPostion);
+	
+	// sanitise tree
+	IF g_iFirstLevelTree >= 0 THEN
+		iStartBoundry = FindBoundry(g_iFirstLevelTree,m_sSchema[iMaxIndex]);
+		iEndBoundry = FindEndBoundry(g_iFirstLevelTree,m_sSchema[iMaxIndex]);
+		IF g_iSecondLevelTree >=0 AND IsInBoundry(iStartBoundry,iEndBoundry,g_iSecondLevelTree) <> 1 THEN
+			g_iSecondLevelTree = -1;g_iThirdLevelTree=-1;g_iFourthLevelTree=-1;
+		END
+	
+		IF g_iThirdLevelTree >=0 AND IsInBoundry(iStartBoundry,iEndBoundry,g_iThirdLevelTree) <> 1 THEN
+			g_iThirdLevelTree=-1;g_iFourthLevelTree=-1;
+		END
+		
+		IF g_iFourthLevelTree >=0 AND IsInBoundry(iStartBoundry,iEndBoundry,g_iFourthLevelTree) <> 1 THEN
+			g_iFourthLevelTree=-1;
+		END
+	END
+	
+	IF g_iFirstLevelTree >= 0 AND iMode = 2 THEN
+		IF Abs(g_iFirstLevelTree-g_iSecondLevelTree) = 1 THEN
+			g_iSecondLevelTree = -1;g_iThirdLevelTree=-1;g_iFourthLevelTree=-1;
+		END
+	END
+	
+/////////// now work out whats the equipments item number is ////////////////////////////////////////////////////////////////////////////////////////////////////////
+	IF g_iFirstLevelTree >=0 THEN
+		ProgressString3 = "Equipment Area Hierachey found and sanity filter run";
+		ProgressString4 = "Looking for Equipment Number";
+		DisplaySchema(g_iDisplayCountMax,m_sSchema[iMaxIndex],iMode,iEquipPostion, g_iFirstLevelTree, g_iSecondLevelTree, g_iThirdLevelTree, g_iFourthLevelTree);
+		
+		FindEquipDigits(sFileName, m_sSchema[iMaxIndex], iMode, iEquipPostion, g_iFirstLevelTree, g_iSecondLevelTree, g_iThirdLevelTree, g_iFourthLevelTree);
+		ProgressString4 = "Looking for Equipment Number and sanity filter run";
+	ELSE	  
+		ProgressString3 = "Primary Area Hierachy Level Not found. Aborting"; 
+		ErrLog("Import aborted. First level could not be determined");	    
+	END
+	
+//////// validate equipment hierachy does not have item digits seperating areas if so remove invalid sub areas and re reun find for equipment item number /////////
+	IF g_iFirstLevelTree >=0 THEN
+		iIndex = 0;
+		iFound = 0;
+		ProgressString5 = "Equipment item Number found. Now validateing Area Hierachy";
+		DisplaySchema(g_iDisplayCountMax,m_sSchema[iMaxIndex],iMode,iEquipPostion, g_iFirstLevelTree, g_iSecondLevelTree, g_iThirdLevelTree, g_iFourthLevelTree);
+		
+		WHILE iIndex < g_iTagElementMax AND iFound = 0 DO
+			IF g_iMatrix0[iIndex*g_iEquipTypeMax] = 1 THEN
+				iFound = 1;
+				ErrLog("tag digit found at element "+IntToStr(iIndex+1) +" looking for bad tree");
+				
+				// if first area digit is to the right of a digit
+				IF g_iFirstLevelTree > iIndex THEN
+					IF g_iSecondLevelTree < iIndex THEN
+						iFound = 2; // clear secondary and lower if a digit is between it and primary 
+						g_iSecondLevelTree = -1;
+						g_iThirdLevelTree = -1;
+						g_iFourthLevelTree = -1;
+					END
+					IF g_iThirdLevelTree < iIndex THEN
+						iFound = 2; // clear third level and lower if a digit is between it and primary 
+						g_iThirdLevelTree = -1;
+						g_iFourthLevelTree = -1;
+					END
+					IF g_iFourthLevelTree < iIndex THEN
+						iFound = 2; // clear fourth if a digit is between it and primary 
+						g_iFourthLevelTree = -1;
+					END	
+				// if first area digit is to the left of the next area digit			
+				ELSE
+					IF g_iSecondLevelTree > iIndex THEN
+						iFound = 2; //clear secondary AND lower IF a digit IS between it AND primary 
+						g_iSecondLevelTree = -1;
+						g_iThirdLevelTree = -1;
+						g_iFourthLevelTree = -1;
+					END
+					IF g_iThirdLevelTree > iIndex THEN
+						iFound = 2; // clear third level and lower if a digit is between it and primary 
+						g_iThirdLevelTree = -1;
+						g_iFourthLevelTree = -1;
+					END
+					IF g_iFourthLevelTree > iIndex THEN
+						iFound = 2; // clear fourth if a digit is between it and primary 
+						g_iFourthLevelTree = -1;
+					END					
+				END
+				IF iFound = 2 THEN
+					// re import digits now that we have removed the bad sub areas
+					ProgressString5 = "Invalid Area Hierachy levels found and removed";
+					DisplaySchema(g_iDisplayCountMax,m_sSchema[iMaxIndex],iMode,iEquipPostion, g_iFirstLevelTree, g_iSecondLevelTree, g_iThirdLevelTree, g_iFourthLevelTree);
+		
+					ProgressString4 = "Serching for equipment Item number again as Area Hierachy was invalid";
+					FindEquipDigits(sFileName, m_sSchema[iMaxIndex], iMode, iEquipPostion, g_iFirstLevelTree, g_iSecondLevelTree, g_iThirdLevelTree, g_iFourthLevelTree);
+					DisplaySchema(g_iDisplayCountMax,m_sSchema[iMaxIndex],iMode,iEquipPostion, g_iFirstLevelTree, g_iSecondLevelTree, g_iThirdLevelTree, g_iFourthLevelTree);
+					ProgressString4 = "New Equipment number Found. Sanity Tests Run";
+				END
+			END
+			iIndex = iIndex + 1;
+		END
+		ProgressString5 = "Area Hierachy levels Validated";
+	END
+
+///////// sort area digit hierachy so primary areas are left sub areas are to the right	/////////////////////////////////////////////////////////////////////////////////////
+	// sort tree	
+	IF g_iSecondLevelTree < g_iFirstLevelTree AND g_iSecondLevelTree <> -1 THEN
+		iTemp = g_iFirstLevelTree;
+		g_iFirstLevelTree = g_iSecondLevelTree;
+		g_iSecondLevelTree = iTemp;
+	END
+	
+	IF g_iFourthLevelTree < g_iThirdLevelTree AND g_iFourthLevelTree <> -1 THEN
+		iTemp = g_iThirdLevelTree ;
+		g_iThirdLevelTree  = g_iFourthLevelTree;
+		g_iFourthLevelTree = iTemp;
+	END
+	
+	// sort 2nd stage
+	IF g_iSecondLevelTree > g_iThirdLevelTree AND g_iThirdLevelTree <> -1 THEN
+		iTemp = g_iThirdLevelTree ;
+		g_iThirdLevelTree  = g_iSecondLevelTree;
+		g_iSecondLevelTree = iTemp;
+	END
+	
+	// sort 3rd stage	
+	IF g_iSecondLevelTree < g_iFirstLevelTree AND g_iSecondLevelTree <> -1 THEN
+		iTemp = g_iFirstLevelTree;
+		g_iFirstLevelTree = g_iSecondLevelTree;
+		g_iSecondLevelTree = iTemp;
+	END
+	
+	IF g_iFourthLevelTree < g_iThirdLevelTree AND g_iFourthLevelTree <> -1 THEN
+		iTemp = g_iThirdLevelTree ;
+		g_iThirdLevelTree  = g_iFourthLevelTree;
+		g_iFourthLevelTree = iTemp;
+	END	
+	
+/////////////// Present final equipment Hierachy found //////////////////////////////////////////////////////////////////////////////////////////////
+	IF g_iFirstLevelTree >=0 THEN
+		ErrLog("Equipment model schema found. Dumping results to kernel");
+		
+		ProgressString6 = "Equipment model schema found. Detailed results are in system log and kernel";
+		DisplaySchema(g_iDisplayCountMax,m_sSchema[iMaxIndex],iMode,iEquipPostion, g_iFirstLevelTree, g_iSecondLevelTree, g_iThirdLevelTree, g_iFourthLevelTree);
+		
+		// output finding
+		ErrLog("Schema Found :"+m_sSchema[iMaxIndex]);
+	
+		//convert iEquipPostion to iEquipType;
+		iEquipType = EquipPostionToEquipType(m_sSchema[iMaxIndex],iEquipPostion);
+		ErrLog("Equipment type is at element "+IntToStr(iEquipType+1));
+		
+		IF iMode = 1 THEN
+			ErrLog("First Level=" + IntToStr(g_iFirstLevelTree+1));
+			IF g_iSecondLevelTree >=0 THEN
+				ErrLog("Second Level="  + IntToStr(g_iSecondLevelTree+1));
+			END
+			IF g_iThirdLevelTree >=0 THEN
+				ErrLog("Third Level="  + IntToStr(g_iThirdLevelTree+1));
+			END
+			IF g_iFourthLevelTree >= 0 THEN
+				ErrLog("Fourth Level="  + IntToStr(g_iFourthLevelTree+1));	
+			END
+		END
+		IF iMode = 2 THEN
+			ErrLog("First Level=" + IntToStr(g_iFirstLevelTree+1)+","+IntToStr(g_iFirstLevelTree+2));
+			IF g_iSecondLevelTree >=0 THEN
+				ErrLog("Second Level="  + IntToStr(g_iSecondLevelTree+1)+","+IntToStr(g_iSecondLevelTree+2));	
+			END
+		END
+	ELSE 
+		ErrLog("First level could not be determined");
+	END
+	IF g_iSecondLevelTree < 0 THEN
+		ErrLog("Second Level could not be determined");
+	END
+	IF g_iThirdLevelTree < 0 THEN
+		ErrLog("Third Level could not be determined");
+	END
+	IF g_iFourthLevelTree < 0 THEN
+		ErrLog("Fourth Level could not be determined");	
+	END
+	
+	IF g_iFirstLevelTree >=0 THEN
+		iIndex = 0;
+		WHILE iIndex < g_iTagElementMax DO
+			IF g_iMatrix0[iIndex*g_iEquipTypeMax]= 1 THEN
+				ErrLog("tag digit found at element "+IntToStr(iIndex+1));
+			END
+			iIndex = iIndex + 1;
+		END
+	END
+END	
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//                     File  = Import.ci
+//
+//	Function: EquipPostionToEquipType(schemma,equipment type position as a word count)- read in schema and equipment type position as a word count
+//	Description: Helper funtion converts equipment type position as a word count to its actual position in the schema
+//  Returns: INT 	-	equipmnet position in the schema
+//
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+INT
+FUNCTION EquipPostionToEquipType(STRING sSchema, INT iEquipPostion)
+	INT iEquipType;
+	INT iIndex;
+		
+	//convert iEquipPostion to iEquipType;
+	iIndex = 0;
+	iEquipType = 0;
+	WHILE iIndex < iEquipPostion DO
+		iEquipType = StrSearch(iEquipType, sSchema, "W");
+		iEquipType = iEquipType + 1; 
+		iIndex = iIndex + 1;
+	END	
+		
+	iEquipType = iEquipType - 1;
+	RETURN iEquipType;
+END
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//                     File  = Import.ci
+//
+// Funcion DisplaySchema(Number of tags read,
+//			most used schema,
+//			Number of Digits per Area number,
+//			equipment position,
+//			Primary Area Number,
+//			Secondary Area number,
+//			Tirtuary Area number,
+//			forthlevel Area) - input number of tags read, schema, number of digits per area, equip position, Area Hierachy
+// Description: Presentation funtions that push current schema and Hierachy to citect graphics page.
+//
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////// 
+
+FUNCTION DisplaySchema(INT iDisplayCountMax,STRING sSchema,INT iMode,INT iEquipPostion,INT iFirstLevelTree, INT iSecondLevelTree, INT iThirdLevelTree, INT iFourthLevelTree)
+	INT iSchemaLength = StrLength(sSchema);
+	INT iEquipElement = EquipPostionToEquipType(sSchema,iEquipPostion); // 0 based
+	INT iDisplayCount;
+	STRING sElement;
+
+	// set Max to actual length of schema
+	IF iSchemaLength < g_iDisplayCountMax THEN
+		g_iDisplayCountMax = iSchemaLength;
+	END
+	
+	// debug dump all variables
+	FOR iDisplayCount = 1 TO iDisplayCountMax DO
+		SELECT CASE iDisplayCount -1
+			CASE iEquipElement
+				sElement = " - Equipment ID";
+			CASE iFirstLevelTree
+				sElement = " - Primary Area number";
+			CASE iSecondLevelTree
+				sElement = " - Secondary Area number";
+			CASE iThirdLevelTree
+				sElement = " - Tertiary Area number";
+			CASE iFourthLevelTree
+				sElement = " - Fourth Area number";
+			CASE ELSE
+				sElement = "";
+		END SELECT
+		
+		IF iMode = 2 AND iDisplayCount >= 1 THEN 
+			IF iDisplayCount -1 <> iEquipElement AND sElement <> "" THEN
+				sElement = sElement + ", Digit 2";
+			END
+
+			SELECT CASE iDisplayCount-2
+				CASE iFirstLevelTree
+					sElement = " - Primary Area number, Digit 1";
+				CASE iSecondLevelTree
+					sElement = " - Secondary Area number, Digit 1";
+				CASE iThirdLevelTree
+					sElement = " - Tertiary Area number, Digit 1";
+				CASE iFourthLevelTree
+					sElement = " - Fourth Area number, Digit 1";
+			END SELECT
+		END
+		
+		IF iDisplayCount-1 < g_iTagElementMax AND iFirstLevelTree >=0 THEN
+			IF g_iMatrix0[(iDisplayCount-1)*g_iEquipTypeMax]= 1 THEN
+				sElement = " - tag digit";
+			END
+		END
+		
+		TagWrite("ScemaString"+IntToStr(iDisplayCount),StrMid(sSchema,iDisplayCount-1,1) + sElement);	
+	END
+END

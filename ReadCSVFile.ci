@@ -1,0 +1,635 @@
+GLOBAL INT g_iTagElementMax = 10;
+
+GLOBAL STRING g_sTag[20];
+GLOBAL INT g_iTagMax = 20;
+MODULE INT m_iTagNumElementStored; // mumber of elements stored in g_sTag
+
+GLOBAL INT g_iReadinRecordCount;
+
+// matrx    - number of possible equip types, elements in tag, (equip tpe, count total,item, count of possible matches ie areas, match 1 ,count of matches 1)
+MODULE INT m_iTreeIndexMax = 10; // limit to 10 at this time ie 0-9 = numbers
+GLOBAL INT g_iMatrix0[32000]; // store number of tree branches ie unique digits for this tag and equipmnet type . or digit search
+GLOBAL STRING g_sMatrix[32000]; // area.count. ie Digit count at equipment in schema. counts up to g_iTagElementMax Areas (75.3.45.1.777.2)
+GLOBAL INT g_iMatrixMax = 32000;
+
+GLOBAL INT g_iEquipTypeTotal=0;
+GLOBAL INT g_iEquipTypeMax = 1600; // maximum equipment types to store
+GLOBAL STRING g_sEquipMatrix[1600]; // equipment types to store
+GLOBAL INT g_iEquipTypeCountMatrix[1600]; // count of each equipment types
+GLOBAL INT g_iEquipTypeUsed =0; // counts actual amount of equipment (plus areas) uses
+
+GLOBAL INT g_testcount = 0;
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+///				File ReadCSVFile.ci
+/// Function (Helper) MoveScenarioDataToArray
+///	Description:
+///		Reads through the input file and moves the input data for each scenario,
+///		into arrays of local variables that are defined in this project. 
+///		These arrays are used in DBFconfig to manipulate the project configuration
+///
+///	Parameters:
+///		sFileName:			    The files name of the varable tag csv file
+///		sScenarioNumber:		The schema to match
+///		iEquipPostion:			Position of the Nth word in schema that coresponds to the equipment type
+///		iMode:					The mode to which the readin will follow
+///									-1 = reset Matrix array g_sEquipment[] and Read in Equipment types only
+///
+/// Helper Funtions :	GetVariable = gets tag from raw csv varable tag line
+///						GetScenarioNumberFromScenarioData - generate schema FOR variable tag AND put tag components in to matrix g_sTag[]
+///						SendTagToMatrix - process variable tag according to mode and store in Matrix
+///
+///	Return value:
+///		The number of enteried for the selected scenario in input data file.
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+INT
+FUNCTION MoveScenarioDataToArray(INT iSearchDigit, STRING sFileName, STRING sScenarioNumber,INT iEquipPostion, INT iMode,INT iFirstLevelTree=-1, INT iSecondLevelTree=-1, INT iThirdLevelTree=-1, INT iFourthLevelTree=-1)
+
+	INT iTotalScenarioDataRecords;
+	INT hFile;
+	STRING sCurrentScenarioDataRecord,sCurrentScenarioDataLine,sCurrentScenarioDataLineSufix;
+	STRING sFirstField;
+	STRING sCurrentScenarioData;
+	INT iIndex, iSuffix;
+	INT iError;
+	INT iTagPart;
+	
+	ErrSet(1);
+		
+	// clear out old matrix
+	iIndex = 0;
+	WHILE iIndex < g_iMatrixMax DO
+		g_sMatrix[iIndex] = "";
+		g_iMatrix0[iIndex] = 0;
+		iIndex = iIndex + 1;
+	END
+	
+	// clear out equipment count
+	iIndex = 0;
+	WHILE iIndex < g_iEquipTypeMax DO
+		g_iEquipTypeCountMatrix[iIndex] = 0;
+		iIndex = iIndex + 1;
+	END
+	
+	// clear matrix equipment for first read of Hierachy search or first read of digit search
+	iIndex = 0;
+	WHILE iIndex < g_iEquipTypeMax AND (iFirstLevelTree = -1 OR iSearchDigit = 1) DO
+		g_sEquipMatrix[iIndex] = "";
+		iIndex = iIndex + 1;
+	END
+		
+	IF iFirstLevelTree = -1 THEN
+		g_iEquipTypeTotal = 0; // reset total for equipment type
+	END
+	
+	g_testcount = 0;
+
+	// read in data
+	iIndex = 0; 
+	WHILE iIndex < 2 DO  //read in twice for digit search in case large digit found last 
+		g_iReadinRecordCount = 0;
+		hFile = FileOpen(sFileName,"r");
+		WHILE NOT(FileEOF(hFile)) AND g_iReadinRecordCount < g_iMaxReadIn DO	
+			sCurrentScenarioDataLine = FileReadLn(hFile);
+			iError = IsError();
+			sCurrentScenarioDataRecord = GetVariable(sCurrentScenarioDataLine); //gets 3rd field (ie tag)
+			
+			//ErrLog("raw variale tag text read from file :" + sCurrentScenarioDataRecord);
+			
+			//generate schema for variable tag and put tag components into matrix g_sTag[] and set m_iTagNumElementStored															
+			sFirstField = GetScenarioNumberFromScenarioData(sCurrentScenarioDataRecord);
+			
+			//Next check the tag read in matches the Scenario schema format
+			IF StrSearch(0,sFirstField,sScenarioNumber) = 0 THEN
+							
+				IF TagRead("ExampleTag") = "" THEN
+					ErrLog("Tag ="+sCurrentScenarioDataRecord+" Tag Scenario =" +sFirstField+ " Scenario Number ="+sScenarioNumber );
+					TagWrite("ExampleTag",sCurrentScenarioDataRecord);
+				END
+				
+				// dump data going in to kernel
+				//ErrLog("text going into slot :"+IntToStr(iReadinRecordCount)+ " = " + sCurrentScenarioDataRecord);
+				SendTagToMatrix(iSearchDigit,m_iTagNumElementStored,sScenarioNumber,iEquipPostion,iMode,iFirstLevelTree, iSecondLevelTree, iThirdLevelTree,iFourthLevelTree);											
+			END
+			
+			iSuffix = 2;
+			WHILE iSuffix < 6 AND iError = 275 DO
+				sCurrentScenarioDataLineSufix = FileReadLn(hFile);
+				iError = IsError();
+				iSuffix = iSuffix + 1;
+			END
+			g_iReadinRecordCount = g_iReadinRecordCount + 1;
+		END
+		FileClose(hFile);
+		iIndex = iIndex + 1;
+		IF iSearchDigit = 0 THEN 
+			iIndex = 2; //skip to 1 read in 
+		END
+	END
+	
+	RETURN g_iReadinRecordCount;
+END
+
+////////////////////////////////////////////////////////////////////////////////////////////////
+//		File : ReadCSVFile.ci
+//	Function (Function): GetScenarioNumberFromScenarioData(variable tag) - input variable tag
+//	Description: Gets the Scenario Format ie schema eg "WNNNNWNNNN" 
+//	Return: STRING - schema from input variable
+//						- Group of character containing a to z or A to Z add a "W" to output string (ie word)
+//						- Is a Number add a "N" to output string (ie Numerical digit)
+//						- Is a "_" or "\" add a "D" to output string (ie deliniator)
+//
+//	Internal Global Variables set: Array String g_sTag[] - breakdown of tag characters grouped per schema character sequentialy in an array.
+//								:INT m_iTagNumElementStored - store number of array elements (ie length of schema)
+//
+///////////////////////////////////////////////////////////////////////////////////////////////
+
+STRING
+FUNCTION GetScenarioNumberFromScenarioData(STRING sVariable)
+	INT iPos=0,iPosMax;
+	INT iChr;
+	STRING sChr;
+	STRING sType="";
+	STRING sScenarioNumber="";
+	INT iTagPart=0;
+	STRING sTagPart ="";
+	
+	FOR iPos = 0 TO g_iTagMax-1 DO
+		g_sTag[iPos] ="";
+	END
+	
+	iPosMax = StrLength(sVariable);
+	
+	iPos=0;
+	WHILE iPos < iPosMax AND iTagPart <= g_iTagMax DO 
+		sChr = StrMid(sVariable, iPos, 1);
+		iChr = StrToChar(sChr);
+		IF (iChr >= StrToChar("A") AND iChr <= StrToChar("Z") ) OR (iChr >= StrToChar("a") AND iChr <= StrToChar("z")) THEN
+			IF sType <> "W" THEN
+				sType = "W";
+				iTagPart = iTagPart + 1;
+				IF iTagPart <= g_iTagMax THEN
+					sScenarioNumber = sScenarioNumber + sType;
+					g_sTag[iTagPart-1] = sChr;
+				END
+			ELSE
+				g_sTag[iTagPart-1] = g_sTag[iTagPart-1] + sChr;
+			END
+		END
+
+		IF iChr >= StrToChar("0") AND iChr <= StrToChar("9") THEN
+			sType = "N";
+			iTagPart = iTagPart + 1;
+			IF iTagPart <= g_iTagMax THEN
+				sScenarioNumber = sScenarioNumber + sType;
+				g_sTag[iTagPart-1] = sChr;
+			END
+		END
+		IF iChr = StrToChar("_") THEN
+			sType = "D";  // deliniators are ignored and are not recorded in schema or tag metrix but do split words
+			iTagPart = iTagPart + 1;
+			IF iTagPart <= g_iTagMax THEN
+				sScenarioNumber = sScenarioNumber + sType;
+				g_sTag[iTagPart-1] = sChr;
+			END		
+		END
+		IF iChr = StrToChar("\") THEN
+			sType = "S";  // deliniators are ignored and are not recorded in schema or tag metrix but do split words
+			iTagPart = iTagPart + 1;
+			IF iTagPart <= g_iTagMax THEN
+				sScenarioNumber = sScenarioNumber + sType;
+				g_sTag[iTagPart-1] = sChr;
+			END		
+		END
+		
+		iPos = iPos + 1;
+	END 
+	
+	IF iTagPart > g_iTagMax THEN
+		ErrLog("WARNING tag is to big. tag "+sVariable);
+	END
+
+	IF iTagPart > g_iTagMax THEN
+		iTagPart = iTagPart-1; // this part wasn't actualy stored so decreaase by one
+	END
+	
+	m_iTagNumElementStored = iTagPart;
+	
+	RETURN sScenarioNumber;
+END
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////
+//		File : ReadCSVFile.ci]
+//	Function (Helper): GetVariable(CSV line)
+//	Description: from a string containing a CSV records get the characters between 2nd and 3rd comma
+//	Return: STRING - variable tag 
+//
+///////////////////////////////////////////////////////////////////////////////////////////////////////
+
+STRING
+FUNCTION GetVariable(STRING sLine)
+	INT iPos;
+	STRING sVariable;
+	
+	iPos = StrSearch(0,sLine,","); //get position of first comma
+	IF iPos <> -1 THEN
+		iPos = StrSearch(iPos+1,sLine,","); //get position of second comma
+		IF iPos <> -1 THEN
+			sVariable = StrMid(sLine,iPos+1,StrLength(sLine) -1 - iPos);
+			iPos = StrSearch(0,sVariable,","); //get position of third comma
+			IF iPos <> -1 THEN
+				sVariable = StrLeft(sVariable,iPos);
+				RETURN sVariable;
+			END
+		END
+	END
+	
+	RETURN "";
+END
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//				File ReadCSVFile.ci
+// Function (Helper)	SendTagToMatrix - digit/area store mode, schema, equipment word position. input mode. known area hierachy
+// Description: Process all varibles and store in matrixes 
+//
+// Helper Functions 	: SendTreePart - store variable in matrixes for later processing to find area hieracy etc
+//						: SendDigPart - store variables in matrix to find item digits
+//
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+FUNCTION SendTagToMatrix(INT iSearchDigit, INT iLength, STRING sScenarioNumber,INT iEquipPostion, INT iMode, INT iFirstLevelTree, INT iSecondLevelTree, INT iThirdLevelTree, INT iFourthLevelTree)
+	INT iTagEquipPart, iTagPart,iTreePart;
+	INT iIndex,iFound,iFoundEqType = 0;
+	STRING sEqPart,sEqSearch;
+	INT iTimesFound = 0;
+	INT iEquipType = 0; //only use 1 level for matrix for equip as we have a memory constraint
+	INT iEquipLevelTree;
+	
+	//convert iEquipPostion to iEquip;
+	iIndex = 0;
+	iEquipLevelTree = 0;
+	WHILE iIndex < iEquipPostion DO
+		iEquipLevelTree = StrSearch(iEquipLevelTree, sScenarioNumber, "W");
+		iEquipLevelTree = iEquipLevelTree + 1; 
+		iIndex = iIndex + 1;
+	END	
+	iEquipLevelTree = iEquipLevelTree - 1;  // schema position of Nth word
+
+	//get equip from tag
+	iFoundEqType = 0;
+	iTagEquipPart = 0; //start from postion 0 of schema
+	iTimesFound = 0;
+	WHILE iFoundEqType = 0 AND StrLength(sScenarioNumber) > iTagEquipPart AND StrMid(sScenarioNumber,iTagEquipPart,1) <> "" DO
+		IF StrMid(sScenarioNumber,iTagEquipPart,1) = "W" THEN
+			iTimesFound = iTimesFound + 1;
+			IF iTimesFound = iEquipPostion THEN
+				iFoundEqType = 1;
+				sEqPart = g_sTag[iTagEquipPart]; // get equipment part from tag
+			END
+		END
+		iTagEquipPart = iTagEquipPart + 1;
+	END
+	
+	iFound = 0; 
+	// add next level tree to equipment tree structure if first level tree has been found
+	IF iFirstLevelTree <> -1 AND iFoundEqType = 1 AND iSearchDigit = 0 THEN
+		//add first layer context to equip
+		IF iFirstLevelTree>=0 THEN
+			sEqPart = sEqPart + "." + g_sTag[iFirstLevelTree]; 
+			IF iMode = 2 THEN
+				sEqPart = sEqPart + g_sTag[iFirstLevelTree+1]; // add second character if in 2chr mode
+			END
+		END	
+		//add second layer context to equip
+		IF iSecondLevelTree>=0 THEN
+			sEqPart = sEqPart + "." + g_sTag[iSecondLevelTree]; 
+			IF iMode = 2 THEN
+				sEqPart = sEqPart + g_sTag[iSecondLevelTree+1]; // add second character if in 2chr mode
+			END
+		END	
+		//add third layer context to equip
+		IF iThirdLevelTree>=0 THEN
+			sEqPart = sEqPart + "." + g_sTag[iThirdLevelTree]; 
+			IF iMode = 2 THEN
+				sEqPart = sEqPart + g_sTag[iThirdLevelTree+1]; // add second character if in 2chr mode
+			END
+		END		
+		
+		// filter to top equipment types for current layer 
+		iIndex = 0;
+		iFound = 0; 
+		
+		WHILE iIndex < g_iEquipTypeTotal AND iFound = 0 DO 
+			sEqSearch = g_sEquipMatrix[iIndex];
+			IF sEqSearch = sEqPart THEN
+				iFound = 1;
+			ELSE
+				iIndex = iIndex + 1;
+			END
+		END
+	END	
+		
+	//find a position if already exists or new for eqipment and store in array g_sEquipMatrix[]
+	IF iFoundEqType = 1 AND (iFirstLevelTree = -1 OR iSearchDigit = 1) THEN 
+		iIndex = 0;
+		iFound = 0;
+		WHILE iFound <> 1 AND iIndex < g_iEquipTypeMax DO 
+			sEqSearch = g_sEquipMatrix[iIndex]; // get equipmwnt type from matrix
+			IF sEqSearch = sEqPart OR sEqSearch = "" THEN
+				iFound = 1;
+				IF sEqSearch = "" THEN
+					g_sEquipMatrix[iIndex] = sEqPart; // always record on 1st part
+					IF iIndex+1 > g_iEquipTypeTotal THEN 
+						g_iEquipTypeTotal = iIndex+1; // record number of equipment (1 based)
+					END
+					IF g_iEquipTypeTotal = g_iEquipTypeMax THEN
+						ErrLog("Warning the number of equipment has reached the array limt of "+ IntToStr(g_iEquipTypeMax));
+					END
+				END
+			ELSE
+				iIndex = iIndex + 1;
+			END
+		END
+
+		g_iEquipTypeUsed = g_iEquipTypeTotal;
+	END
+	
+	// if there is room for the equipemnt 
+	IF iFound = 1 AND iFoundEqType = 1 THEN
+		g_iEquipTypeCountMatrix[iIndex]=g_iEquipTypeCountMatrix[iIndex]+1; // increase equipent count
+		iTagPart = 0;
+		WHILE iTagPart < iLength AND iTagPart < g_iTagElementMax AND iTagPart < StrLength(sScenarioNumber) DO
+			//store if not Fourth level
+			IF iTagPart <> iFourthLevelTree AND NOT (iMode = 2 AND iTagPart = iFourthLevelTree+1) OR iFourthLevelTree = -1 THEN 		
+				//store if not Third level
+				IF iTagPart <> iThirdLevelTree AND NOT (iMode = 2 AND iTagPart = iThirdLevelTree+1) OR iThirdLevelTree = -1 THEN 
+					//store if not second level
+					IF iTagPart <> iSecondLevelTree AND NOT (iMode = 2 AND iTagPart = iSecondLevelTree+1) OR iSecondLevelTree = -1 THEN 
+						//store if not first level
+						IF iTagPart <> iFirstLevelTree AND NOT (iMode = 2 AND iTagPart = iFirstLevelTree+1) OR iFirstLevelTree = -1 THEN 
+							//store if not equipment type
+							IF iTagPart <> iEquipLevelTree THEN
+								IF iSearchDigit = 0 THEN
+									SendTreePart(iTagPart,sEqPart,iIndex,iMode,sScenarioNumber,iFirstLevelTree);
+								ELSE
+									SendDigPart(iTagPart,sEqPart,iIndex,iMode,sScenarioNumber,iEquipLevelTree);
+								END
+							END
+						END
+					END
+				END
+			END
+			iTagPart = iTagPart + 1;
+		END
+	END
+END
+
+// store variable tag in matrix so area hieracy can be determined
+FUNCTION SendTreePart(INT iTagPart, STRING sEqPart, INT iIndex, INT iMode, STRING sScenarioNumber, INT iFirstLevelTree)
+	INT iIndexOffset = g_iEquipTypeMax* (iTagPart) + iIndex;  // g_iEquipTypeMax = 1600; // maximum equipment types to store, g_iTagMax = 20;
+	// iIndexOffset = equipment type locaton (max 1600) + 1600*location in schema   1600 x 20 matrix 
+	INT iTreeIndex = 0, iFound=0;
+	STRING sCurentTree,sArea;
+	
+	IF iMode < 1 THEN
+		iMode = 1;
+	END
+	
+	IF iTagPart + iMode > StrLength(sScenarioNumber) THEN
+		iFound = 2; // if 2 chr mode don't use last character
+	ELSE 
+		IF StrMid(sScenarioNumber,iTagPart+1,1) = "W" AND iMode = 2 THEN
+			iFound = 2; // if in 2chr mode ingnore number next to word
+		END
+		
+		IF StrMid(sScenarioNumber,iTagPart+1,1) = "D" AND iMode = 2 THEN
+			iFound = 2; // if in 2chr mode ingnore number next to dash
+		END
+		
+		IF StrMid(sScenarioNumber,iTagPart+1,1) = "S" AND iMode = 2 THEN
+			iFound = 2; // if in 2chr mode ingnore number next to slash
+		END
+	END
+	
+	// skip all "W" - words
+	IF StrMid(sScenarioNumber,iTagPart,1) = "W" THEN
+		iFound = 2;
+	END
+	
+	// skip all "D" - dash
+	IF StrMid(sScenarioNumber,iTagPart,1) = "D" THEN
+		iFound = 2;
+	END
+	
+	// skip all "S" - slash
+	IF StrMid(sScenarioNumber,iTagPart,1) = "S" THEN
+		iFound = 2;
+	END
+	
+	// skip if there are to many elements detected
+	IF g_iMatrix0[g_iEquipTypeMax* (iTagPart)] = -1 THEN
+		iFound = 1; // if flag on first row of equipment at schema point. Then set iFound so no more tags are procesed
+	END
+	
+	WHILE iTreeIndex < m_iTreeIndexMax AND iFound = 0 DO
+		sCurentTree = ReadMatrix(iIndexOffset,iTreeIndex*2);  // stored tree branch (Area)
+		sArea = g_sTag[iTagPart]; // new tree area 
+		IF iMode = 2 THEN
+			sArea = sArea + g_sTag[iTagPart+1];
+		END
+		
+		// if area (digit) exit in stored matrix
+		IF sCurentTree = sArea OR sCurentTree = "" THEN
+			iFound = 1;
+			IF sCurentTree = "" THEN
+				WriteMatrix(iIndexOffset,iTreeIndex*2, sArea); // add new area (digit) to matrix 
+				g_iMatrix0[iIndexOffset] = iTreeIndex+1; // increase number of stored tree branches used (ie will be 1 to 10)
+			END
+			WriteMatrix(iIndexOffset,iTreeIndex*2+1, IntToStr(1+ StrToInt(ReadMatrix(iIndexOffset,iTreeIndex*2+1))) ); // incrase area count
+		ELSE
+			iTreeIndex = iTreeIndex + 1; // increase index and see if tag part (digit) is in next stored area count
+			IF iTreeIndex = m_iTreeIndexMax THEN
+				g_iMatrix0[g_iEquipTypeMax* (iTagPart)] = -1; 
+				ErrLog("tagpart = "+IntToStr(iTagpart)+" to many tree elements");
+			END
+		END
+	END
+END
+
+// store variable in matrix so item digits can be determined
+FUNCTION WriteMatrix(INT iIndex, INT iTree, STRING sData);
+	INT iStingIndex = 0;
+	INT iFound = 0;
+	STRING sPrefix,sSuffix;
+	INT iPrefixIndex,iSuffixIndex;
+	STRING sStored;
+	INT iPosition;
+
+	sStored = g_sMatrix[iIndex];
+	
+	iPrefixIndex = 0;
+	iPosition = 0;
+	WHILE iPrefixIndex < StrLength(sStored) AND iTree >= iPosition AND iPrefixIndex >= 0 DO
+		iPrefixIndex = StrSearch(iPrefixIndex,sStored,".");
+		IF iPrefixIndex >= 0 THEN 
+			iPosition = iPosition + 1;
+			iPrefixIndex = iPrefixIndex + 1;
+		END
+	END
+	
+	IF iPosition = iTree+1 THEN
+		//replace old entry
+		sPrefix = StrLeft(sStored,iPrefixIndex);
+
+		iSuffixIndex = StrSearch(iPrefixIndex,sStored,".");
+		IF iSuffixIndex > 0 THEN
+			sSuffix = StrRight(sStored, StrLength(sStored) - iSuffixIndex);
+		ELSE
+			sSuffix = "";
+		END
+		sStored = sPrefix + sData + sSuffix;
+		
+	ELSE
+		sStored = sStored + "." + sData;
+	END
+	
+	g_sMatrix[iIndex] = sStored;
+END
+
+// read data piece stored in sequential blocks from a string matrix with "." as seperated of string blocks
+STRING 
+FUNCTION ReadMatrix(INT iIndex,INT iTree)
+	INT iStingIndex = 0;
+	INT iFound = 0;
+	STRING sData;
+	INT iPrefixIndex,iSuffixIndex;
+	STRING sStored;
+	INT iPosition;
+
+	sStored = g_sMatrix[iIndex];
+	
+	iPrefixIndex = 0;
+	iPosition = 0;
+	WHILE iPrefixIndex < StrLength(sStored) AND iTree >= iPosition AND iPrefixIndex >= 0 DO
+		iPrefixIndex = StrSearch(iPrefixIndex,sStored,".");
+		IF iPrefixIndex >= 0 THEN 
+			iPosition = iPosition + 1;
+			iPrefixIndex = iPrefixIndex + 1;
+		END
+	END
+	IF iTree+1 = iPosition THEN
+		sData = StrRight(sStored, StrLength(sStored) - iPrefixIndex);
+		iSuffixIndex = StrSearch(0,sData,".");
+		IF iSuffixIndex > 0 THEN
+			sData = StrLeft(sData, iSuffixIndex);
+		END
+	ELSE 
+		RETURN "";
+	END
+
+	RETURN sData;
+END
+
+// store variable tag in matrix so Item Digits can be determined
+FUNCTION SendDigPart(INT iTagPart,STRING sEqPart,INT iEquipIndex,INT iMode,STRING sScenarioNumber,INT iEquipLevelTree)
+	INT iIndexOffset = g_iEquipTypeMax* (iTagPart) + iEquipIndex;
+	INT iFound=0;
+	STRING sNewTagPrefix="";
+	STRING sNewTagDigit="";
+	STRING sNewTagSuffix="";
+	INT iIndex;
+	
+	STRING sOldTagPrefix="";
+	STRING sOldTagSuffix="";
+	STRING sOldTagDigit="";
+	STRING sReadOldTagDigit="";
+	
+	// skip all "W" - words
+	IF StrMid(sScenarioNumber,iTagPart,1) = "W" THEN
+		iFound = 1;
+	END
+	
+	// skip all "D" - dash
+	IF StrMid(sScenarioNumber,iTagPart,1) = "D" THEN
+		iFound = 1;
+	END
+	
+	// skip all "S" - slash
+	IF StrMid(sScenarioNumber,iTagPart,1) = "S" THEN
+		iFound = 1;
+	END
+	
+	// skip if word or already found
+	IF iFound = 0 AND g_iMatrix0[g_iEquipTypeMax* (iTagPart)] <> 1 THEN
+		// make New Tag Prefix
+		iIndex = 0;
+		WHILE iIndex < iTagPart DO
+			sNewTagPrefix = sNewTagPrefix + g_sTag[iIndex];
+			iIndex = iIndex + 1;
+		END
+		
+		// make New Tag Digit
+		sNewTagDigit=g_sTag[iTagPart];
+		
+		// make New tag Suffix
+		iIndex = iIndex + 1;
+		WHILE iIndex < g_iTagMax AND g_sTag[iIndex] <> "" DO
+			sNewTagSuffix = sNewTagSuffix + g_sTag[iIndex];
+			iIndex = iIndex + 1;
+		END
+		
+		// is New tag Pefix recorded already used
+		iIndex = 0;
+		WHILE iIndex < 10 AND iFound = 0 DO 
+			sOldTagPrefix = ReadMatrix(iIndexOffset,iIndex*3);
+			IF sNewTagPrefix = sOldTagPrefix THEN
+				iFound = 1;
+			END
+			iIndex = iIndex + 1;
+		END 
+		
+		// is New tag Suffix recorded already used
+		IF iFound = 1 THEN 
+			iFound = 0;
+			sOldTagSuffix = ReadMatrix(iIndexOffset,iIndex*3+2);
+			IF sNewTagSuffix = sOldTagSuffix THEN
+				iFound = 1;
+			END
+		END
+		
+		// is New Tag Digit different
+		IF iFound = 1 THEN 
+			iFound = 0;
+			sOldTagDigit = ReadMatrix(iIndexOffset,iIndex*3+1);
+			IF sNewTagDigit <> sOldTagDigit THEN
+				iFound = 1;
+			ELSE
+				iFound = -1;
+			END
+		END
+		
+		// if tag with same prefix and suffix and different digit found then set matrix0 to match found
+		IF iFound = 1 THEN
+			ErrLog("found for digit "+ IntToStr(iTagPart+1)+" new tag "+sNewTagPrefix+sNewTagDigit+sNewTagSuffix+" old tag "+
+			sOldTagPrefix+sOldTagDigit+sOldTagSuffix );
+			g_iMatrix0[g_iEquipTypeMax* (iTagPart)] = 1;
+		END
+		
+		// if not a match store if New Tag Digit is different
+		IF iFound = 0 THEN
+			iIndex = 0;
+			WHILE iFound = 0 AND iIndex < 10 DO
+				sReadOldTagDigit = ReadMatrix(iIndexOffset,iIndex*3+1);
+				IF sReadOldTagDigit = "" OR sReadOldTagDigit = sNewTagDigit THEN
+					iFound = 1;
+					IF sReadOldTagDigit = "" THEN
+						WriteMatrix(iIndexOffset,iIndex*3,sNewTagPrefix+"."+sNewTagDigit+"."+sNewTagSuffix);
+					END
+				END
+				iIndex = iIndex + 1;
+			END
+		END
+	END
+END
+

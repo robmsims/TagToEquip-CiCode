@@ -1,0 +1,351 @@
+MODULE REAL m_rCountTotalMAX;
+GLOBAL REAL g_rScoreTotalPREV;
+GLOBAL REAL g_rScoreTotalMAX;
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//						File: FindEquipAndTree.ci
+// Function (Helper): FindBestMatchForTree(sVarSchema,iDontUseWords). if iDontUseWords=1 skip words in schema
+// Description:
+//
+// Helper Functions: [countequip]AddHighestCountOfStoredTreeParts(schema point) - score data for schema element
+//
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+INT
+FUNCTION
+FindBestMatchForTree(STRING sVarSchema,INT iDontUseWords = -1);
+	INT iScoreTotal;			
+	INT	iFound;
+	INT	iTagPart;
+	INT iEnd=-1;
+	INT iFilter;
+	INT iFilterMin = 92;
+	INT iPercentFilter = g_iPercentFilter;
+
+	WHILE (iPercentFilter >= iFilterMin OR iEnd=-1) AND iEnd<=0 DO
+		iEnd = 0;
+		
+		g_rScoreTotalPREV = 0;
+		g_rScoreTotalMAX = 0;
+		
+		m_rCountTotalMAX= 0;
+		
+		iFound = 0;
+		iTagPart = 0;
+		
+		WHILE iTagPart < g_iTagElementMax AND iFound = 0 DO
+			IF iDontUseWords = 1 AND StrMid(sVarSchema,iTagPart,1) = "W" THEN
+				// if word skip to next element
+				ErrLog("-Element"+ StrMid(sVarSchema,iTagPart,1)+" - Skiped");
+				iTagPart = iTagPart + 1; //move to next shema element
+			END
+		
+			IF StrMid(sVarSchema,iTagPart,1) = "" OR iTagPart = g_iTagElementMax THEN
+				iFound = 1; //end
+			ELSE
+				AddHighestCountOfStoredTreeParts(iTagPart); // process data (equipment count, area counts and, counts of areas) stored in matrixes at for a schema element
+				ErrLog("-Element"+ StrMid(sVarSchema,iTagPart,1)+" - Score="+StrTrim(RealToStr(g_rScoreTotal,15,2))+" - Count Total="+StrTrim(RealToStr(g_rCountTotal,15,2)) );
+
+				IF g_rScoreTotalMAX < g_rScoreTotal THEN
+					IF g_rScoreTotalPREV < g_rScoreTotalMAX THEN
+						g_rScoreTotalPREV = g_rScoreTotalMAX;
+					END
+					g_rScoreTotalMAX = g_rScoreTotal;
+					iScoreTotal = iTagPart;
+					m_rCountTotalMAX=g_rScoreTotal;
+				ELSE
+					IF g_rScoreTotalPREV < g_rScoreTotal THEN
+						g_rScoreTotalPREV = g_rScoreTotal;
+					END
+				END
+				
+				iTagPart = iTagPart + 1; //move to next schema element
+			END
+		END
+		ErrLog("End scoring for filter = "+ IntToStr(iPercentFilter) + " %");
+		iPercentFilter = iPercentFilter - 1;
+		
+		IF g_rScoreTotalPREV = 0 THEN 
+			g_rScoreTotalPREV = g_rScoreTotalMAX/2; // prevent divide by 0 error
+		END 
+		
+		IF g_rScoreTotalPREV/g_rScoreTotalMAX < iPercentFilter/100.0 AND g_rScoreTotalMAX <> 0 THEN
+			iEnd = 1; // signal end of search. match found
+		END
+	END
+	
+	IF iEnd <> 1 THEN
+		ErrLog("Match Not Found. Next highest score is = " + RealToStr(g_rScoreTotalPREV/g_rScoreTotalMAX*100, 2, 1) +" % lower");
+		RETURN -1;
+	ELSE 
+		ErrLog("Match Found. Next highest score is = " + RealToStr(g_rScoreTotalPREV/g_rScoreTotalMAX*100, 2, 1) +" % lower");
+		RETURN iScoreTotal; // return schema position 0 based
+	END
+END	
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//						file FindEquipAndTree.ci
+// Function (Helper) FindEquipTypePositionAndImportdata(filename, schema) - inputs filename and schema
+//		Description: finds the word position for the equipment types for variable tags matching schema
+//						AND prepares the array to find the Primary Area
+//		Returns: INT  - Nth word number in schema where equipment types can be found 	
+//
+// Helper Functions: 	[ReadCSVFile]MoveScenarioDataToArray(0,sFileName,sSchema,iEquipPostion,iMode)- store data in array for:
+//									iSearchDigit (= 0) - iSearchDigit = 0 - ie use area search mode
+//									sFileName - file Name of variable tag csv
+//									sSchema	- Schema to match
+//									iMode (= -1) - store only equipment types
+//						FindBestMatchForTree(schema, =1 , Dont use word element in schema=1) - find highest score for matrix generated for given word position
+//						AddHighestCountOfStoredTreeParts(iFirstLevelTree) score matrix at scenario
+//						
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+INT
+FUNCTION FindEquipTypePositionAndImportdata(STRING sFileName, STRING sSchema)
+	INT iMode;
+	INT iFirstLevelTree=-1,iFirstLevelTree2=-1;
+	INT iEquipPostion=1;
+	REAL rMaxForPos1,rMaxForPos2=0;
+	STRING sCountLowest = "";
+	STRING	sCountHighest = "";
+	INT iFoundLowest;
+	INT	iFoundHighest;
+	INT	iIndex,iIndex2;
+
+	// Now find Asset type work position.
+	ErrLog("Now finding specalised Equipment Types in areas.");
+	iMode = -1;  //switch to record equipment
+	
+	ProgressString2 = ProgressString2+ " - scoreing for word 2";
+	g_iPercentFilter = 92;
+	iEquipPostion = 2; // test number of potential equipment types found 2nd word
+	MoveScenarioDataToArray(0,sFileName,sSchema,iEquipPostion,iMode); // mode = -1 :record all equipment types and count them
+	ErrLog("Total number of equipment types for Word 2="+ IntToStr(g_iEquipTypeTotal));
+	iFirstLevelTree2 = FindBestMatchForTree(sSchema,1);  //  don't use words  - in percent
+	rMaxForPos2 = m_rCountTotalMAX;
+
+	ProgressString2 = ProgressString2+ " - scoreing for word 1";
+	g_iPercentFilter = 92;
+	iEquipPostion = 1; // test number of potential equipment types found 1st word
+	MoveScenarioDataToArray(0,sFileName,sSchema,iEquipPostion,iMode); // -1= record all equipment types and count them
+	ErrLog("Total number of equipment types for Word 1="+ IntToStr(g_iEquipTypeTotal));
+	iFirstLevelTree = FindBestMatchForTree(sSchema,1);  //  don't use words  - in percent
+	rMaxForPos1 = m_rCountTotalMAX;
+
+	// redo if 2nd word had higher score
+	IF rMaxForPos1 < rMaxForPos2 THEN 
+		ProgressString2 = ProgressString2+ " - word 2 has equpmet IDs. reloading data for word 2";
+		g_iPercentFilter = 92;
+		iEquipPostion = 2;
+		ErrLog("Score for Word 1="+RealToStr(rMaxForPos1,3,0)+" Score for Word 2="+RealToStr(rMaxForPos2,3,0)+" Equipment type is at word No "+IntToStr(iEquipPostion));
+		DisplaySchema(g_iDisplayCountMax,sSchema,1,iEquipPostion, g_iFirstLevelTree, g_iSecondLevelTree, g_iThirdLevelTree, g_iFourthLevelTree);
+		MoveScenarioDataToArray(0,sFileName,sSchema,iEquipPostion,iMode); // re build equipment list and matrix
+		iFirstLevelTree = iFirstLevelTree2;
+	ELSE
+		ProgressString2 = ProgressString2+ " - word 1 has equpmet IDs";
+		ErrLog("Score for Word 1="+RealToStr(rMaxForPos1,3,0)+" Score for Word 2="+RealToStr(rMaxForPos2,3,0)+" Equipment type is at word No "+IntToStr(iEquipPostion));
+		DisplaySchema(g_iDisplayCountMax,sSchema,1,iEquipPostion, g_iFirstLevelTree, g_iSecondLevelTree, g_iThirdLevelTree, g_iFourthLevelTree);
+	END
+	
+	ErrLog("Total number of equipment types for project="+ IntToStr(g_iEquipTypeTotal));
+	
+	g_iFirstLevelTree = iFirstLevelTree; // skip re evaluation as we arn't useing words "W" for areas
+
+	RETURN iEquipPostion;
+END
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//						file FindEquipAndTree.ci
+// Function (Helper): FindTree(File name of csv, Schema, Equipment word position)
+// Descripion: find area Hierachy
+//
+// Helper Function 	:[FindEquipAndTree]FindBestMatchForTree(Schema, 1= score data, {0 = ues "W" in schema }) -score entire schema
+//					:[ReadCSVFile]MoveScenarioDataToArray - used to re import data for 2chr search later
+//					:[countequip]FilterEquipment(for level) = create top equipmet list)
+
+INT
+FUNCTION FindTree(STRING sFileName, STRING sSchema,INT iEquipPostion);
+	INT iMode = 1; 
+	REAL rPercentScoreStoredTreePartsPrev = 1;
+
+	// get scores for 1st level
+	ErrLog("Find the Area Hierachy");
+	
+	// g_iFirstLevelTree was obtained when getting Equipment area
+	IF g_iFirstLevelTree < 0 THEN
+		ProgressString3 = "First level not found switching to 2 character number mode";	
+		ErrLog("Try 2 chr areas");
+		iMode = 2;
+		MoveScenarioDataToArray(0,sFileName,sSchema,iEquipPostion,iMode); // reimport data in 2chr digit mode
+		g_iPercentFilter=98;
+		g_iFirstLevelTree = FindBestMatchForTree(sSchema,1); // score matrix
+		
+		DisplaySchema(g_iDisplayCountMax,sSchema,iMode,iEquipPostion, g_iFirstLevelTree, g_iSecondLevelTree, g_iThirdLevelTree, g_iFourthLevelTree);
+	END
+	
+	IF g_iFirstLevelTree < 0 THEN
+		ErrLog("First level could not be determined");
+	ELSE
+		ProgressString3 = "First level found at element "+IntToStr(g_iFirstLevelTree+1);
+
+		IF iMode = 1 THEN	
+			ErrLog("First level=" + IntToStr(g_iFirstLevelTree+1));
+		END
+		IF iMode = 2 THEN	
+			ErrLog("First level=" + IntToStr(g_iFirstLevelTree+1) + "," + IntToStr(g_iFirstLevelTree+2));
+		END
+		
+		// find second level
+		
+		// load top with actual 1st level tree
+		g_iPercentFilter=90;
+		FilterEquipment(g_iFirstLevelTree); // -1 =  is make top equipment list filter
+		ErrLog("Top of 1st level - weighted");
+		
+		// now process for second level
+		MoveScenarioDataToArray(0,sFileName,sSchema,iEquipPostion,iMode,g_iFirstLevelTree);
+		ErrLog("Total equipment 2nd level ="+ IntToStr(g_iEquipTypeUsed));
+		
+		g_iPercentFilter=98;
+		g_iSecondLevelTree = FindBestMatchForTree(sSchema,1);  // score matrix
+		DisplaySchema(g_iDisplayCountMax,sSchema,iMode,iEquipPostion, g_iFirstLevelTree, g_iSecondLevelTree, g_iThirdLevelTree, g_iFourthLevelTree);
+	END
+	
+	IF g_iSecondLevelTree < 0 THEN
+		ErrLog("Second level could not be determined.");
+	ELSE
+		ProgressString3 = ProgressString3+ ",Second level found at element "+IntToStr(g_iSecondLevelTree+1);
+
+		IF iMode = 1 THEN
+			ErrLog("Second level="  + IntToStr(g_iSecondLevelTree+1));	
+		END
+		IF iMode = 2 THEN
+			ErrLog("Second level="  + IntToStr(g_iSecondLevelTree+1)+","+IntToStr(g_iSecondLevelTree+2));	
+		END
+		// find 3rd level
+				
+		// load top  with actual 2nd level tree
+		g_iPercentFilter=90;
+		FilterEquipment(g_iSecondLevelTree); // -1 =  is make top equipment list filter
+		
+		ErrLog("Top of 2nd level - weighted");
+		
+		// now process for 3rd level
+		MoveScenarioDataToArray(0,sFileName,sSchema,iEquipPostion,iMode,g_iFirstLevelTree,g_iSecondLevelTree);
+		ErrLog("Total equipment 3rd level ="+ IntToStr(g_iEquipTypeUsed));
+		
+		g_iPercentFilter = 98;
+		g_iThirdLevelTree = FindBestMatchForTree(sSchema,1); // score matrix
+		
+		ErrLog("Sanity test order of Third Level");
+		DisplaySchema(g_iDisplayCountMax,sSchema,iMode,iEquipPostion, g_iFirstLevelTree, g_iSecondLevelTree, g_iThirdLevelTree, g_iFourthLevelTree);
+
+		// if inbetween previous areas make invalid  
+		IF g_iThirdLevelTree > g_iSecondLevelTree THEN
+			IF g_iThirdLevelTree < g_iFirstLevelTree THEN
+				g_iThirdLevelTree = -1;
+			END
+		ELSE
+			IF g_iThirdLevelTree > g_iFirstLevelTree THEN
+				g_iThirdLevelTree = -1;
+			END
+		END 
+	END
+	
+	IF g_iThirdLevelTree < 0 THEN
+		ErrLog("Third Level could not be determined.");
+	ELSE
+		ProgressString3 = ProgressString3+ ",Third level found at element "+IntToStr(g_iThirdLevelTree+1);
+
+		IF iMode = 1 THEN
+			ErrLog("Third Level="  + IntToStr(g_iThirdLevelTree+1));	
+		END
+		IF iMode = 2 THEN
+			ErrLog("Third Level="  + IntToStr(g_iThirdLevelTree+1)+","+IntToStr(g_iThirdLevelTree+2));	
+		END
+		// find 4th level
+				
+		// load top  with actual 3rd level tree
+		g_iPercentFilter=90;
+		FilterEquipment(g_iThirdLevelTree); // -1 =  is make top equipment list filter
+		
+		ErrLog("Top of 3rd level - weighted");
+				
+		// now process for 4th level
+		MoveScenarioDataToArray(0,sFileName,sSchema,iEquipPostion,iMode,g_iFirstLevelTree,g_iSecondLevelTree,g_iThirdLevelTree);
+		
+		ErrLog("Total equipment 4th level ="+ IntToStr(g_iEquipTypeUsed));
+		
+		g_iPercentFilter = 98;
+		g_iFourthLevelTree = FindBestMatchForTree(sSchema,1); // score matrix
+		
+		ErrLog("Sanity test order of Fourth Level");
+		DisplaySchema(g_iDisplayCountMax,sSchema,iMode,iEquipPostion, g_iFirstLevelTree, g_iSecondLevelTree, g_iThirdLevelTree, g_iFourthLevelTree);
+
+		// if inbetween previous areas make invalid  
+		IF g_iFourthLevelTree > g_iThirdLevelTree THEN
+			IF g_iFourthLevelTree < g_iFirstLevelTree THEN
+				g_iFourthLevelTree = -1;
+			END
+		ELSE
+			IF g_iFourthLevelTree > g_iFirstLevelTree THEN
+				g_iFourthLevelTree = -1;
+			END
+		END 
+	END
+	
+	IF g_iFourthLevelTree < 0 THEN
+		ErrLog("Fourth Level could not be determined.");
+	ELSE
+		ProgressString3 = ProgressString3+ ",Fourth level found at element "+IntToStr(g_iFourthLevelTree+1);
+
+		IF iMode = 1 THEN
+			ErrLog("Fourth Level="  + IntToStr(g_iFourthLevelTree+1));	
+		END
+		IF iMode = 2 THEN
+			ErrLog("Fourth Level="  + IntToStr(g_iFourthLevelTree+1)+","+IntToStr(g_iFourthLevelTree+2));	
+		END
+		// end of search for areas
+	END
+	RETURN iMode;
+END	
+
+INT 
+FUNCTION FindBoundry(INT iFirstLevelTree,STRING sSchema);
+	INT iIndex=-1;
+	INT iPrevIndex=-1;
+	INT iFound=0;
+	
+	WHILE iFound=0 DO
+		iPrevIndex = iIndex;
+		iIndex = iIndex + 1;
+		iIndex = StrSearch(iIndex, sSchema,"W");
+		IF iIndex = -1 OR iIndex > iFirstLevelTree THEN
+			iFound = 1;
+		END
+	END
+	
+	RETURN iPrevIndex;
+END
+
+INT 
+FUNCTION FindEndBoundry(INT iFirstLevelTree,STRING sSchema);
+	INT iIndex;
+	INT iFound=0;
+	
+	iIndex = StrSearch(iFirstLevelTree +1, sSchema,"W");
+	
+	RETURN iIndex;
+END
+
+INT
+FUNCTION IsInBoundry(INT iStartBoundry,INT iEndBoundry,INT iLevelTree)
+	INT iFound = 0;
+	
+	IF iStartBoundry<=iLevelTree AND (iEndBoundry>iLevelTree OR iEndBoundry = -1) THEN
+		iFound = 1;
+	END
+
+	RETURN iFound;
+END
+

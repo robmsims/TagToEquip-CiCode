@@ -1,0 +1,164 @@
+MODULE STRING m_sCountArea;
+
+GLOBAL REAL g_rCountTotal;
+GLOBAL REAL g_rScoreTotal;
+
+GLOBAL INT g_iPercentFilter=90;
+
+
+STRING
+FUNCTION ReadEqPartTreePart(INT iIndex)
+	STRING sEqPart;
+	
+	sEqPart = g_sEquipMatrix[iIndex]; //equiptype
+	RETURN sEqPart;
+END
+
+INT
+FUNCTION ReadRowsStoredTreePart(INT iIndex)
+	INT iRows;
+	
+	iRows = g_iEquipTypeCountMatrix[iIndex]; // number of times equipment type (at iIndex) used
+	RETURN iRows;
+END
+
+INT
+FUNCTION ReadNumStoredTreeParts(INT iTagPart, INT iIndex)
+	INT iIndexOffset = g_iEquipTypeMax*(iTagPart) + iIndex;
+	INT iTreePart;
+	
+	iTreePart = g_iMatrix0[iIndexOffset]; //number of stored areas (1-10)
+	RETURN iTreePart;
+END
+
+INT
+FUNCTION GetHighestCountOfStoredTreePart(INT iTagPart, INT iIndex)
+	INT iIndexOffset = g_iEquipTypeMax*(iTagPart) + iIndex; //
+	INT iAreas;
+	INT iTreeIndex = 0;
+	INT iCount = 0;
+		
+	m_sCountArea = "";
+	iAreas = ReadNumStoredTreeParts(iTagPart, iIndex); //number of stored areas
+	WHILE iTreeIndex <= iAreas-1 DO
+		IF StrToInt(ReadMatrix(iIndexOffset,iTreeIndex * 2 + 1)) > iCount THEN
+			iCount = StrToInt(ReadMatrix(iIndexOffset,iTreeIndex * 2 + 1)); 
+			m_sCountArea = ReadMatrix(iIndexOffset, iTreeIndex * 2); 
+		END
+		iTreeIndex = iTreeIndex + 1;
+	END
+	
+	RETURN iCount;
+END
+	
+INT
+FUNCTION FindNumOfAreasUsed(INT iTagPart, STRING sCArea)
+	INT iIndexOffset = g_iEquipTypeMax*(iTagPart);
+	INT iTreePart;
+	INT iIndex=0;
+	INT iEquipCount=0,iTreeIndex;
+	
+	WHILE iIndex < g_iEquipTypeTotal DO 
+		iTreePart = ReadNumStoredTreeParts(iTagPart, iIndex); //number of stored areas
+		
+		IF iTreePart <> 0 THEN 
+			iTreeIndex = 0;
+			WHILE iTreeIndex <= iTreePart-1 DO
+				IF ReadMatrix(iIndexOffset + iIndex,iTreeIndex * 2) = sCArea THEN
+					iEquipCount = iEquipCount + 1;
+				END
+				iTreeIndex = iTreeIndex + 1;
+			END
+		END
+		iIndex = iIndex + 1;
+	END	
+		
+	RETURN iEquipCount;
+END
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//				File CountEquip.ci
+//	Function (Helper) AddHighestCountOfStoredTreeParts(location in scenario, use top scoreing equipment list fileter)
+//  Description: score Matrix data
+//										
+//
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+STRING
+FUNCTION AddHighestCountOfStoredTreeParts(INT iTagPart)
+	INT iIndex = 0;
+	INT iCount;
+	INT iPercent;
+	INT iNumStored, iNumtree;
+	REAL rScoreTotal = 0;
+	INT iFound=0;
+	INT iNumOfAreasUsed;
+	
+	g_rCountTotal = 0;
+	g_rScoreTotal = 0;
+	
+	iIndex = 0;
+	iCount =  g_iMatrix0[g_iEquipTypeMax* (iTagPart)]; //get flag for if there are to many areas for the schema element
+	IF iCount = -1 THEN
+		iFound = 1; // if to many schema area parts detected ef "W" type used then set flag to skip scoreing
+	END
+	
+	WHILE iIndex < g_iEquipTypeTotal AND iFound = 0 DO
+		iNumtree = ReadNumStoredTreeParts(iTagPart, iIndex);  // number of elements stored for this equip type.
+		IF iNumtree > 0 THEN // Skip if eqiement slot has no records 
+			iCount = GetHighestCountOfStoredTreePart(iTagPart, iIndex); // find highest tree ie m_sCountArea and it's count
+
+			// skip if score is higher than the possible highest score already - optimization
+			IF g_rScoreTotalPREV < iCount*1000.0 AND rScoreTotal < iCount*1000.0 THEN
+				iNumStored = ReadRowsStoredTreePart(iIndex); // Total number of times equipment type is used  
+				iPercent = 1000.0*iCount/iNumStored;
+				
+				// compare previous score if unique 
+				IF iPercent >= g_iPercentFilter*10.0 THEN
+					// create scoreing
+					iNumOfAreasUsed = FindNumOfAreasUsed(iTagPart,m_sCountArea); // find out how many equipment is in this area (highest count area) 
+					g_rCountTotal = g_rCountTotal + 1; //count times equipment count is run for an area
+					
+					// find best case
+					IF rScoreTotal < 1.0*iCount*iPercent/iNumOfAreasUsed THEN
+						rScoreTotal = 1.0*iCount*iPercent/iNumOfAreasUsed; // get score for eqtype that is the most unique
+					END
+				END
+			END
+		END	
+		iIndex = iIndex + 1;
+	END	
+	
+	// calculate final scores
+	g_rScoreTotal = rScoreTotal;
+		
+	RETURN IntToStr(g_rScoreTotal); // this dosen't get used. globals are used instead by calling funtion
+END 
+
+// make a list of top scoreing equipment and add top area suffix to equipment type
+FUNCTION FilterEquipment(INT iTagPart)
+	INT iIndex = 0;
+	INT iCount;
+	INT iPercent;
+	INT iNumStored, iNumtree;
+
+	WHILE iIndex < g_iEquipTypeTotal DO
+		iNumtree = ReadNumStoredTreeParts(iTagPart, iIndex);  // number of elements stored for this equip type. 
+		IF iNumtree > 0 THEN 
+			iNumStored = ReadRowsStoredTreePart(iIndex);
+			iCount = GetHighestCountOfStoredTreePart(iTagPart, iIndex); // also gets its area - m_sCountArea
+			iPercent = 1000.0*iCount/iNumStored;
+
+			IF iPercent >= g_iPercentFilter*10.0 THEN
+				g_sEquipMatrix[iIndex] = ReadEqPartTreePart(iIndex) + "." + m_sCountArea;
+			ELSE	
+				g_sEquipMatrix[iIndex] = ""; // kill equip type
+				g_iEquipTypeUsed = g_iEquipTypeUsed  - 1;
+			END
+		END
+		iIndex = iIndex + 1;
+	END	
+END
+
+
+

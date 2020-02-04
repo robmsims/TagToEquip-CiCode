@@ -1,0 +1,40 @@
+
+FUNCTION FindEquipDigits(STRING sFileName, STRING sSchema, INT iMode, INT iEquipPostion, INT iFirstLevelTree, INT iSecondLevelTree, INT iThirdLevelTree, INT iFourthLevelTree);
+	INT iIndex,iLastIndex=-1;
+	INT iCount, iPrevCount=0;
+	
+	// get top  by raw count
+	ErrLog("get top  - by raw count");
+	
+	MoveScenarioDataToArray(1,sFileName,sSchema,iEquipPostion,iMode, iFirstLevelTree, iSecondLevelTree, iThirdLevelTree, iFourthLevelTree);
+
+	// sanatise digits
+	ErrLog("Sanity tests running on Digits");
+	ProgressString4 = ProgressString4 + " Running Sanity filter on Digits";
+	iIndex = 0;
+	WHILE iIndex < g_iTagElementMax DO
+		IF g_iMatrix0[iIndex*g_iEquipTypeMax] = 1 THEN
+			iCount = iCount + 1;
+			IF iCount > iPrevCount THEN 
+				iPrevCount = iCount;
+				iLastIndex = iIndex;
+			END 
+			
+			//ErrLog("tag digit found at element "+IntToStr(iIndex+1));
+		ELSE
+			iCount = 0;
+		END
+		iIndex = iIndex + 1;
+	END
+	
+	iIndex = 0;
+	WHILE iIndex < g_iTagElementMax DO
+		IF NOT (iIndex > iLastIndex - iPrevCount AND iIndex <= iLastIndex) THEN
+			//ErrLog("tag digit removed at element "+IntToStr(iIndex+1));
+			g_iMatrix0[iIndex*g_iEquipTypeMax]= 0;
+		END
+		iIndex = iIndex + 1;
+	END
+	
+	ErrLog(IntToStr(iPrevCount)+" Digits found");
+END
